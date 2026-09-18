@@ -1,0 +1,57 @@
+name: Patch CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, "feature/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout drama remix patch
+        uses: actions/checkout@v4
+
+      - name: Checkout Clips Kitty v1.2.0
+        uses: actions/checkout@v4
+        with:
+          repository: ColinGPT9/clips-studio
+          ref: v1.2.0
+          path: upstream
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Apply drama remix patch
+        run: python apply_patch.py upstream
+
+      - name: Compile patched Python
+        run: python -m compileall -q upstream/drama upstream/server upstream/core upstream/video_editor
+
+      - name: Run drama planner tests
+        working-directory: upstream
+        run: |
+          python -m pip install -q pytest
+          PYTHONPATH=. python -m pytest -q tests/test_drama_planner.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: upstream/ui/package-lock.json
+
+      - name: Typecheck patched desktop UI
+        working-directory: upstream/ui
+        run: |
+          npm ci
+          npm run typecheck
+
+      - name: Build patched desktop UI
+        working-directory: upstream/ui
+        run: npm run build
