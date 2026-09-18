@@ -2,6 +2,8 @@ name: Build Windows Drama Remix
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
