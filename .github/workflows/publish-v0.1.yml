@@ -1,0 +1,80 @@
+name: Publish Drama Remix v0.1
+
+on:
+  push:
+    branches:
+      - release/package-v0.1
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v4
+
+      - name: Download portable package parts from successful build
+        uses: actions/download-artifact@v4
+        with:
+          name: drama-remix-portable-parts
+          path: package
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 35344230180
+
+      - name: Build bootstrap installer
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $csc)) { throw "csc.exe not found" }
+          & $csc /nologo /target:winexe /optimize+ /out:bootstrap\DramaRemix-Setup.exe /reference:System.dll /reference:System.Core.dll /reference:System.Drawing.dll /reference:System.Net.Http.dll /reference:System.Windows.Forms.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /reference:Microsoft.CSharp.dll bootstrap\DramaRemixSetup.cs
+          if (-not (Test-Path bootstrap\DramaRemix-Setup.exe)) { throw "Setup exe was not built" }
+
+      - name: Verify package parts
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem package -Filter "DramaRemix.part*" | Sort-Object Name
+          if ($parts.Count -ne 4) {
+            $parts | Format-Table Name, Length
+            throw "Expected 4 package parts, found $($parts.Count)"
+          }
+          $parts | Format-Table Name, Length
+
+      - name: Create or update GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v0.1.0"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "短剧二创工具 v0.1.0" --notes "基于 Clips Kitty v1.2.0 的短剧一键二创测试版。下载 DramaRemix-Setup.exe 即可，安装器会自动获取约 6.7GB 的完整程序。对应源代码保存在本公开仓库中。"
+          }
+          gh release upload $tag bootstrap\DramaRemix-Setup.exe --clobber
+          Get-ChildItem package -Filter "DramaRemix.part*" | Sort-Object Name | ForEach-Object {
+            gh release upload $tag $_.FullName --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Upload failed: $($_.Name)" }
+          }
+
+      - name: Publish release manifest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $parts = Get-ChildItem package -Filter "DramaRemix.part*" | Sort-Object Name
+          $lines = @(
+            "Drama Remix v0.1.0",
+            "Source build run: 35344230180",
+            "Setup: DramaRemix-Setup.exe",
+            ""
+          )
+          foreach ($p in $parts) {
+            $hash = (Get-FileHash $p.FullName -Algorithm SHA256).Hash.ToLower()
+            $lines += "$($p.Name)  $($p.Length) bytes  sha256:$hash"
+          }
+          $lines | Set-Content -Encoding UTF8 release-manifest.txt
+          gh release upload v0.1.0 release-manifest.txt --clobber
