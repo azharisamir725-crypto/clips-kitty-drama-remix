@@ -1,0 +1,5 @@
+This mode turns one short-drama source video into ONE shorter, coherent remix.
+Preserve causality and plot comprehension. Prefer removing redundancy and dead
+weight over rearranging the story. Never cut in the middle of spoken dialogue.
+The final edit should feel like a tighter version of the same episode, not a
+collection of unrelated highlights.
