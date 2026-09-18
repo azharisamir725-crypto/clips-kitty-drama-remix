@@ -44,6 +44,23 @@ def main() -> int:
     ):
         copy_new(rel, root)
 
+    # FFmpeg 9 removed the legacy -vsync option. Clips Kitty v1.2.0 still
+    # emits it in two places, which makes every render fail before encoding.
+    # Use the modern -fps_mode equivalents so the bundled FFmpeg 9.0.1 works.
+    cutter_py = root / "video" / "cutter.py"
+    replace_once(
+        cutter_py,
+        '        "-vsync", "cfr",\n',
+        '        "-fps_mode", "cfr",\n',
+    )
+
+    encoding_py = root / "video" / "encoding.py"
+    replace_once(
+        encoding_py,
+        '        "-vsync", "0",              # keep the selected frames, do not resample\n',
+        '        "-fps_mode", "passthrough",   # keep the selected frames, do not resample\n',
+    )
+
     api_py = root / "server" / "api.py"
     replace_once(
         api_py,
