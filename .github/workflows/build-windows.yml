@@ -1,0 +1,98 @@
+name: Build Windows Drama Remix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout drama remix patch
+        uses: actions/checkout@v4
+
+      - name: Checkout Clips Kitty v1.2.0
+        uses: actions/checkout@v4
+        with:
+          repository: ColinGPT9/clips-studio
+          ref: v1.2.0
+          path: upstream
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: upstream/ui/package-lock.json
+
+      - name: Apply drama remix patch
+        run: python apply_patch.py upstream
+
+      - name: Install Python build dependencies
+        shell: pwsh
+        working-directory: upstream
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-build.txt
+          pip uninstall -y torch torchvision
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+
+      - name: Install desktop dependencies
+        working-directory: upstream/ui
+        run: npm ci
+
+      - name: Build Windows package
+        working-directory: upstream
+        run: python scripts/build_installer.py
+
+      - name: Upload small web setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: drama-remix-web-setup
+          path: |
+            upstream/release/**/*Web-Setup-*.exe
+          if-no-files-found: warn
+          compression-level: 0
+
+      - name: Split portable package into GitHub-sized chunks
+        shell: pwsh
+        working-directory: upstream
+        run: |
+          $zip = Get-ChildItem release -Recurse -Filter "ClipsKitty-*.zip" | Select-Object -First 1
+          if (-not $zip) { throw "Portable zip not found" }
+          New-Item -ItemType Directory -Force release\split | Out-Null
+          $chunk = 1800MB
+          $input = [System.IO.File]::OpenRead($zip.FullName)
+          try {
+            $index = 1
+            $buffer = New-Object byte[] (8MB)
+            while ($input.Position -lt $input.Length) {
+              $part = Join-Path "release\split" ("DramaRemix.part{0:D2}" -f $index)
+              $out = [System.IO.File]::Create($part)
+              try {
+                $written = 0L
+                while ($written -lt $chunk -and $input.Position -lt $input.Length) {
+                  $want = [Math]::Min($buffer.Length, [Math]::Min($chunk - $written, $input.Length - $input.Position))
+                  $read = $input.Read($buffer, 0, [int]$want)
+                  if ($read -le 0) { break }
+                  $out.Write($buffer, 0, $read)
+                  $written += $read
+                }
+              } finally { $out.Dispose() }
+              $index++
+            }
+          } finally { $input.Dispose() }
+
+      - name: Upload portable chunks
+        uses: actions/upload-artifact@v4
+        with:
+          name: drama-remix-portable-parts
+          path: upstream/release/split/DramaRemix.part*
+          compression-level: 0
