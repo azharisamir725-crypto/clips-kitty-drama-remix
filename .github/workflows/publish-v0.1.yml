@@ -1,24 +1,33 @@
-name: Publish Drama Remix installer
+name: Publish Drama Remix fixed build
 
 on:
   push:
     branches:
       - release/package-v0.1
     paths:
-      - "bootstrap/**"
       - ".github/workflows/publish-v0.1.yml"
   workflow_dispatch:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
-  publish-installer:
+  publish-fixed-build:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 120
     steps:
       - name: Checkout release branch
         uses: actions/checkout@v4
+
+      - name: Download fixed portable package parts
+        uses: actions/download-artifact@v4
+        with:
+          name: drama-remix-portable-parts
+          path: package
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 35400094435
 
       - name: Build bootstrap installer
         shell: pwsh
@@ -28,12 +37,47 @@ jobs:
           & $csc /nologo /target:winexe /optimize+ /out:bootstrap\DramaRemix-Setup.exe /reference:System.dll /reference:System.Core.dll /reference:System.Drawing.dll /reference:System.Net.Http.dll /reference:System.Windows.Forms.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /reference:Microsoft.CSharp.dll bootstrap\DramaRemixSetup.cs
           if (-not (Test-Path bootstrap\DramaRemix-Setup.exe)) { throw "Setup exe was not built" }
 
-      - name: Replace installer in existing release
+      - name: Verify fixed package parts
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem package -Filter "DramaRemix.part*" | Sort-Object Name
+          if ($parts.Count -ne 4) {
+            $parts | Format-Table Name, Length
+            throw "Expected 4 package parts, found $($parts.Count)"
+          }
+          $parts | Format-Table Name, Length
+
+      - name: Replace release assets with fixed build
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view v0.1.0 *> $null
           if ($LASTEXITCODE -ne 0) { throw "Release v0.1.0 does not exist" }
+
           gh release upload v0.1.0 bootstrap\DramaRemix-Setup.exe --clobber
           if ($LASTEXITCODE -ne 0) { throw "Installer upload failed" }
+
+          Get-ChildItem package -Filter "DramaRemix.part*" | Sort-Object Name | ForEach-Object {
+            gh release upload v0.1.0 $_.FullName --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Upload failed: $($_.Name)" }
+          }
+
+      - name: Publish fixed-build manifest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $parts = Get-ChildItem package -Filter "DramaRemix.part*" | Sort-Object Name
+          $lines = @(
+            "Drama Remix v0.1.0 fixed",
+            "Source build run: 35400094435",
+            "FFmpeg 9 compatibility: -fps_mode",
+            ""
+          )
+          foreach ($p in $parts) {
+            $hash = (Get-FileHash $p.FullName -Algorithm SHA256).Hash.ToLower()
+            $lines += "$($p.Name)  $($p.Length) bytes  sha256:$hash"
+          }
+          $lines | Set-Content -Encoding UTF8 release-manifest.txt
+          gh release upload v0.1.0 release-manifest.txt --clobber
