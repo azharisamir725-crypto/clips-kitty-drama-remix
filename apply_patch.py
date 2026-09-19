@@ -61,6 +61,77 @@ def main() -> int:
         '        "-fps_mode", "passthrough",   # keep the selected frames, do not resample\n',
     )
 
+    # PyInstaller + torchvision 0.29 on Windows can miss the native C++
+    # extensions (_C/_C_stable). When that happens torchvision imports far
+    # enough to register meta kernels, then crashes with:
+    #   RuntimeError: operator torchvision::nms does not exist
+    # Force the wheel's native extension files into the frozen backend and
+    # add a frozen-runtime smoke test so this cannot ship unnoticed again.
+    spec_py = root / "clips-studio.spec"
+    replace_once(
+        spec_py,
+        'import os\nimport shutil\nimport sys\nfrom functools import cache\nfrom pathlib import Path\n' if False else 'from pathlib import Path\n\nfrom PyInstaller.utils.hooks import collect_all, collect_submodules\n',
+        'from pathlib import Path\nimport importlib.util\n\nfrom PyInstaller.utils.hooks import collect_all, collect_submodules\n',
+    )
+    replace_once(
+        spec_py,
+        'for package in ("yt_dlp", "ultralytics", "faster_whisper", "ctranslate2",\n                "curl_cffi", "piper", "onnxruntime"):\n',
+        'for package in ("yt_dlp", "ultralytics", "faster_whisper", "ctranslate2",\n                "curl_cffi", "piper", "onnxruntime", "torchvision"):\n',
+    )
+    replace_once(
+        spec_py,
+        '# uvicorn picks its event loop, HTTP parser and websocket implementation at\n',
+        '# TorchVision 0.29 split its native ops into wheel-side extension files.\n'
+        '# PyInstaller 6.22 can report torchvision._C as a missing hidden import\n'
+        '# even though the wheel contains the .pyd. Collect every root extension\n'
+        '# explicitly so NMS and the stable ABI ops exist in the installed app.\n'
+        'try:\n'
+        '    _tv_spec = importlib.util.find_spec("torchvision")\n'
+        '    if _tv_spec and _tv_spec.submodule_search_locations:\n'
+        '        _tv_dir = Path(next(iter(_tv_spec.submodule_search_locations)))\n'
+        '        for _ext in _tv_dir.glob("*.pyd"):\n'
+        '            binaries += [(str(_ext), "torchvision")]\n'
+        'except Exception:\n'
+        '    pass\n\n'
+        '# uvicorn picks its event loop, HTTP parser and websocket implementation at\n',
+    )
+
+    main_py = root / "main.py"
+    replace_once(
+        main_py,
+        '    sub.add_parser("status", help="Show processing/scheduling state")\n',
+        '    sub.add_parser("status", help="Show processing/scheduling state")\n'
+        '    sub.add_parser("vision-check", help=argparse.SUPPRESS)\n',
+    )
+    replace_once(
+        main_py,
+        '        if args.command == "status":\n            _print_status(db)\n            return 0\n\n',
+        '        if args.command == "status":\n            _print_status(db)\n            return 0\n\n'
+        '        if args.command == "vision-check":\n'
+        '            import torch\n'
+        '            import torchvision\n'
+        '            from torchvision.ops import nms\n\n'
+        '            boxes = torch.tensor([[0., 0., 10., 10.], [1., 1., 9., 9.]])\n'
+        '            scores = torch.tensor([0.9, 0.8])\n'
+        '            kept = nms(boxes, scores, 0.5)\n'
+        '            print(f"vision ops ok: torch={torch.__version__} torchvision={torchvision.__version__} kept={kept.tolist()}")\n'
+        '            return 0\n\n',
+    )
+
+    build_py = root / "scripts" / "build_installer.py"
+    replace_once(
+        build_py,
+        '    print(f"    engine runs (exit 0, {len(output)} bytes of output)")\n\n',
+        '    print(f"    engine runs (exit 0, {len(output)} bytes of output)")\n\n'
+        '    vision = subprocess.run([str(exe), "vision-check"], capture_output=True, text=True,\n'
+        '                            timeout=300, cwd=ROOT)\n'
+        '    vision_output = (vision.stdout or "") + (vision.stderr or "")\n'
+        '    if vision.returncode != 0:\n'
+        '        print(vision_output[-4000:])\n'
+        '        sys.exit("\\nFrozen TorchVision ops failed. Do not package this build.")\n'
+        '    print(f"    vision ops run ({vision_output.strip()})")\n\n',
+    )
+
     api_py = root / "server" / "api.py"
     replace_once(
         api_py,
