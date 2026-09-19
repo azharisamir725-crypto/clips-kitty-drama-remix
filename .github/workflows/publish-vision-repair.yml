@@ -1,0 +1,71 @@
+name: Publish TorchVision repair
+
+on:
+  push:
+    branches:
+      - release/package-v0.1
+    paths:
+      - "bootstrap/DramaRemixVisionRepair.cs"
+      - ".github/workflows/publish-vision-repair.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download matching TorchVision wheel
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path wheel | Out-Null
+          python -m pip download --no-deps torchvision==0.29.0+cu130 --index-url https://download.pytorch.org/whl/cu130 -d wheel
+          if ($LASTEXITCODE -ne 0) { throw "TorchVision wheel download failed" }
+
+      - name: Build native hotfix zip
+        shell: pwsh
+        run: |
+          $whl = Get-ChildItem wheel -Filter "torchvision-0.29.0+cu130-*.whl" | Select-Object -First 1
+          if (-not $whl) { throw "TorchVision wheel not found" }
+          New-Item -ItemType Directory -Force -Path wheel\unpacked | Out-Null
+          tar.exe -xf $whl.FullName -C wheel\unpacked
+          if ($LASTEXITCODE -ne 0) { throw "Wheel extraction failed" }
+          New-Item -ItemType Directory -Force -Path hotfix | Out-Null
+          $native = Get-ChildItem wheel\unpacked\torchvision -File | Where-Object { $_.Extension -in @(".pyd", ".dll") }
+          if (-not $native -or $native.Count -lt 1) {
+            Get-ChildItem wheel\unpacked\torchvision -Force
+            throw "No TorchVision native files found"
+          }
+          $native | Copy-Item -Destination hotfix
+          Get-ChildItem hotfix | Format-Table Name, Length
+          Compress-Archive -Path hotfix\* -DestinationPath vision-hotfix.zip -Force
+
+      - name: Build repair utility
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $csc)) { throw "csc.exe not found" }
+          & $csc /nologo /target:winexe /optimize+ /out:bootstrap\DramaRemix-Vision-Repair.exe /reference:System.dll /reference:System.Core.dll /reference:System.Drawing.dll /reference:System.Net.Http.dll /reference:System.Windows.Forms.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /reference:Microsoft.CSharp.dll bootstrap\DramaRemixVisionRepair.cs
+          if (-not (Test-Path bootstrap\DramaRemix-Vision-Repair.exe)) { throw "Repair exe was not built" }
+
+      - name: Publish repair assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view v0.1.0 *> $null
+          if ($LASTEXITCODE -ne 0) { throw "Release v0.1.0 does not exist" }
+          gh release upload v0.1.0 vision-hotfix.zip --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Hotfix upload failed" }
+          gh release upload v0.1.0 bootstrap\DramaRemix-Vision-Repair.exe --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Repair utility upload failed" }
