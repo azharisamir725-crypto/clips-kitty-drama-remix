@@ -1,4 +1,4 @@
-name: Publish Drama Remix fixed build
+name: Publish Drama Remix fixed build fast
 
 on:
   push:
@@ -20,14 +20,17 @@ jobs:
       - name: Checkout release branch
         uses: actions/checkout@v4
 
-      - name: Download fixed portable package parts
-        uses: actions/download-artifact@v4
-        with:
-          name: drama-remix-portable-parts
-          path: package
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: 35400094435
+      - name: Stream fixed artifact directly
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          $url = "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/10575341499/zip"
+          curl.exe -L --fail --retry 5 --retry-delay 5 -H "Authorization: Bearer $env:GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" $url -o fixed-artifact.zip
+          if ($LASTEXITCODE -ne 0) { throw "Direct artifact download failed" }
+          tar.exe -xf fixed-artifact.zip -C package
+          if ($LASTEXITCODE -ne 0) { throw "Artifact extraction failed" }
 
       - name: Build bootstrap installer
         shell: pwsh
@@ -54,10 +57,8 @@ jobs:
         run: |
           gh release view v0.1.0 *> $null
           if ($LASTEXITCODE -ne 0) { throw "Release v0.1.0 does not exist" }
-
           gh release upload v0.1.0 bootstrap\DramaRemix-Setup.exe --clobber
           if ($LASTEXITCODE -ne 0) { throw "Installer upload failed" }
-
           Get-ChildItem package -Filter "DramaRemix.part*" | Sort-Object Name | ForEach-Object {
             gh release upload v0.1.0 $_.FullName --clobber
             if ($LASTEXITCODE -ne 0) { throw "Upload failed: $($_.Name)" }
